@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 
-our ($v, $d, $c, $nocolor, $help, $no_progress);
+our ($v, $d, $c, $b, $nocolor, $help, $no_progress);
 
 BEGIN {
     use Getopt::Long;
@@ -11,6 +11,7 @@ BEGIN {
         'v:s' => \$v,
         'c:s' => \$c,
         'd' => \$d,
+        'b' => \$b,
         'no-progress' => \$no_progress,
         'nocolor' => \$nocolor,
         'h|help' => \$help,
@@ -21,6 +22,8 @@ BEGIN {
     $c = 1 if not defined $c or $c eq '';
     $nocolor = 0 if not defined $nocolor;
 
+    $b //= 0;
+
     $ENV{'Smart_Comments'}  = 1 if $d;
 
 }
@@ -29,6 +32,7 @@ use Modern::Perl;
 use Getopt::Long;
 use QohA::Git;
 use QohA::Files;
+use QohA::Benchmarks;
 
 BEGIN {
     eval "require Test::Perl::Critic::Progressive";
@@ -55,6 +59,7 @@ if ( @{$git->diff_log} ) {
 
 our $branch = $git->branchname;
 my ( $new_fails, $already_fails, $error_code, $full ) = 0;
+my $benchmarks;
 
 eval {
 
@@ -78,6 +83,11 @@ eval {
         $f->run_checks();
     }
 
+    if ( $b ) {
+        say "\nBenchmarking before patches...";
+        $benchmarks->{pre} = QohA::Benchmarks->run;
+    }
+
     $git->change_branch($branch);
     $git->delete_branch( 'qa-current-commit' );
     $git->create_and_change_branch( 'qa-current-commit' );
@@ -90,7 +100,13 @@ eval {
         }
         $f->run_checks($num_of_commits);
     }
-    say "\n" unless $no_progress;
+
+    say "\n" unless $no_progress or $b;
+
+    if ( $b ) {
+        say "\nBenchmarking after patches...";
+        $benchmarks->{post} = QohA::Benchmarks->run;
+    }
 
     for my $f ( sort { $a->path cmp $b->path } @files ) {
         say $f->report->to_string(
@@ -100,6 +116,28 @@ eval {
                 skip      => \@tests_to_skip,
             }
         );
+    }
+    if ( $b ) {
+        say "+====== Benchmarks ======+";
+        for my $b_name ( sort keys %{ $benchmarks->{pre} } ) {
+            my $pre = $benchmarks->{pre}{$b_name};
+            my $post = $benchmarks->{post}{$b_name};
+            unless ($pre and $post ) {
+                say "Something went WRONG during the test '$b_name'.";
+            }
+            my $diff = ( $post - $pre ) / $pre * 100;
+            my $diff_str = sprintf( "%.2f", $diff );
+            $diff_str = '+' . $diff_str unless $diff_str =~ m|^-|;
+            $diff_str .= '%';
+            say sprintf( "%-15s", $b_name )
+                . " | "
+                . sprintf( "%.2f", $pre ) . 's'
+                . " => "
+                . sprintf( "%.2f", $post ) . 's'
+                . " | "
+                . $diff_str;
+        }
+        say "+========================+";
     }
 };
 
